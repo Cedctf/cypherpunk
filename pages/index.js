@@ -1,12 +1,23 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { usePrivy } from '@privy-io/react-auth';
+import { useWallet } from '@solana/wallet-adapter-react';
+import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 
 export default function LandingPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [isSubmitted, setIsSubmitted] = useState(false);
-  const { ready, authenticated, login } = usePrivy();
+  const [shouldNavigate, setShouldNavigate] = useState(false);
+  const { connected, publicKey } = useWallet();
+  const { setVisible } = useWalletModal();
+
+  // Navigate to /world when wallet connects (if user clicked get started)
+  useEffect(() => {
+    if (shouldNavigate && connected && publicKey) {
+      router.push('/world');
+      setShouldNavigate(false);
+    }
+  }, [connected, publicKey, shouldNavigate, router]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -17,15 +28,17 @@ export default function LandingPage() {
 
   async function handleGetStarted() {
     try {
-      if (!ready) return; // wait until Privy initialized
-      if (authenticated) {
+      if (connected && publicKey) {
+        // Wallet already connected, go to world immediately
         router.push('/world');
         return;
       }
-      await login();
-      router.push('/world');
+      // Open wallet modal to connect
+      setShouldNavigate(true);
+      setVisible(true);
     } catch (e) {
-      // User may cancel the login modal; do nothing
+      // User may cancel the wallet modal; do nothing
+      setShouldNavigate(false);
     }
   }
 
