@@ -1,23 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/router';
-import { useWallet } from '@solana/wallet-adapter-react';
-import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 
 export default function LandingPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [isSubmitted, setIsSubmitted] = useState(false);
-  const [shouldNavigate, setShouldNavigate] = useState(false);
-  const { connected, publicKey } = useWallet();
-  const { setVisible } = useWalletModal();
-
-  // Navigate to /world when wallet connects (if user clicked get started)
-  useEffect(() => {
-    if (shouldNavigate && connected && publicKey) {
-      router.push('/world');
-      setShouldNavigate(false);
-    }
-  }, [connected, publicKey, shouldNavigate, router]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -26,20 +13,9 @@ export default function LandingPage() {
     router.push('/world');
   };
 
-  async function handleGetStarted() {
-    try {
-      if (connected && publicKey) {
-        // Wallet already connected, go to world immediately
-        router.push('/world');
-        return;
-      }
-      // Open wallet modal to connect
-      setShouldNavigate(true);
-      setVisible(true);
-    } catch (e) {
-      // User may cancel the wallet modal; do nothing
-      setShouldNavigate(false);
-    }
+  function handleGetStarted() {
+    // Simply redirect to /world page
+    router.push('/world');
   }
 
   return (
