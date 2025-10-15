@@ -268,23 +268,11 @@ Together, these studies underscore that gamification is not just an add-on but a
 
 ## Team👥
 
-- **Derek Liew Qi Jian**  
-  - *Role*: Project Lead, AI & TEE Integration
-  - [LinkedIn](https://www.linkedin.com/in/derek2403/) | [Twitter](https://x.com/derek2403)
-
-- **Phen Jing Yuan**  
-  - *Role*: AI Engineer
-  - [LinkedIn](https://www.linkedin.com/in/jing-yuan-phen-b42266295/) | [Twitter](https://x.com/ilovedahmo)
-
 - **Marcus Tan Chi Yau**  
-  - *Role*: Frontend Developer & UI/UX Design 
+  - *Role*: FullStack Developer + UI/UX Lead
   - [LinkedIn](https://www.linkedin.com/in/marcus-tan-8846ba271/)
  
 - **Cedric Chung**  
-  - *Role*: Smart Contract Developer
+  - *Role*: FullStack Developer + Smart Contract Developer
   - [LinkedIn](https://www.linkedin.com/in/cedric-chung-2756b4310/)
- 
-- **Edwina Hon Kai Xin**  
-  - *Role*: Frontend Developer & UI/UX Design 
-  - [LinkedIn](https://www.linkedin.com/in/edwina-hon-548189340/)
 
