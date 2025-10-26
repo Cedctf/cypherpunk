@@ -5,74 +5,125 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment";
 import { loadBoy, updateBoy, playBoy } from "../components/boy.js";
-import { usePrivy } from "@privy-io/react-auth";
-import subscriptionAbi from "@/lib/subscription-abi.json";
-import ConnectWalletButton from "@/components/ConnectWalletButton";
+import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
 
-const RPC_URL = `https://rpc.kaigan.jsc.dev/rpc?token=${process.env.NEXT_PUBLIC_KAIGAN_RPC_TOKEN}`;
-const SUBSCRIPTION_CONTRACT_ADDRESS = "0xAb8281Eb535238eA29fC10cbc67959e0FBdb6626";
-const chain = {
-  id: 5278000,
-  name: "JSC Kaigan Testnet",
-  nativeCurrency: { name: "JSC Testnet Ether", symbol: "JETH", decimals: 18 },
-  rpcUrls: { default: { http: [RPC_URL] } }
+const SOLANA_RPC_URL = "https://api.devnet.solana.com";
+const SUBSCRIPTION_PROGRAM_ID = "8vB5vwjvaqi3ZTRnzzQcw8MifMhbE4EJgnKfGfFNkH44";
+const SUBSCRIPTION_AMOUNT = 0.001; // SOL
+
+// Subscription Program IDL
+const SUBSCRIPTION_IDL = {
+  version: "0.1.0",
+  name: "subscription_program",
+  instructions: [
+    {
+      name: "subscribe",
+      accounts: [
+        { name: "subscription", isMut: true, isSigner: false },
+        { name: "user", isMut: true, isSigner: true },
+        { name: "vault", isMut: true, isSigner: false },
+        { name: "systemProgram", isMut: false, isSigner: false }
+      ],
+      args: []
+    }
+  ],
+  accounts: [
+    {
+      name: "Subscription",
+      type: {
+        kind: "struct",
+        fields: [{ name: "user", type: "publicKey" }]
+      }
+    }
+  ]
 };
 
 export default function HomePage() {
   const containerRef = useRef(null);
   const router = useRouter();
-  const { ready, authenticated, user } = usePrivy();
+  const [walletAddress, setWalletAddress] = useState(null);
   const [showSubscribePrompt, setShowSubscribePrompt] = useState(false);
-  const [plans, setPlans] = useState([]);
+  const [isSubscribed, setIsSubscribed] = useState(false);
+  const [expiresAt, setExpiresAt] = useState(null);
+  const [daysRemaining, setDaysRemaining] = useState(0);
   const [subLoading, setSubLoading] = useState(false);
   const [subError, setSubError] = useState("");
 
-  async function createPublicClient() {
-    const { createPublicClient, http } = await import("viem");
-    return createPublicClient({ chain, transport: http(RPC_URL) });
-  }
-
-  async function getContract(client) {
-    const { getContract } = await import("viem");
-    return getContract({ address: SUBSCRIPTION_CONTRACT_ADDRESS, abi: subscriptionAbi, client });
-  }
-
-  // On load, check if the connected wallet is verified + subscribed
-  useEffect(() => {
-    if (!ready) return;
-    if (!authenticated || !user?.wallet?.address) {
-      setShowSubscribePrompt(false);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const client = await createPublicClient();
-        const ok = await client.readContract({
-          address: SUBSCRIPTION_CONTRACT_ADDRESS,
-          abi: subscriptionAbi,
-          functionName: 'isCallerVerifiedAndSubscribed',
-          account: user.wallet.address,
-        });
-        if (!cancelled) setShowSubscribePrompt(!Boolean(ok));
-
-        // Also load available plans for the modal
-        const contract = await getContract(client);
-        const nextId = await contract.read.nextPlanId();
-        const fetched = [];
-        for (let i = 1; i < Number(nextId); i++) {
-          try {
-            const plan = await contract.read.getPlan([BigInt(i)]);
-            if (plan.active) fetched.push({ id: i, ...plan });
-          } catch {}
-        }
-        if (!cancelled) setPlans(fetched);
-      } catch (_) {
-        if (!cancelled) setShowSubscribePrompt(false);
+  // Connect Phantom wallet
+  const connectWallet = async () => {
+    try {
+      const { solana } = window;
+      if (!solana?.isPhantom) {
+        alert("Please install Phantom wallet!");
+        window.open("https://phantom.app/", "_blank");
+        return;
       }
-    })();
-    return () => { cancelled = true; };
-  }, [ready, authenticated, user?.wallet?.address]);
+      const response = await solana.connect();
+      setWalletAddress(response.publicKey.toString());
+      checkSubscription(response.publicKey);
+    } catch (error) {
+      console.error("Error connecting wallet:", error);
+      setSubError("Failed to connect wallet");
+    }
+  };
+
+  // Check if user has subscribed
+  const checkSubscription = async (publicKey) => {
+    try {
+      const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+      const programId = new PublicKey(SUBSCRIPTION_PROGRAM_ID);
+      
+      // Derive subscription PDA (v2 for new structure)
+      const [subscriptionPda] = await PublicKey.findProgramAddress(
+        [Buffer.from("subscription_v2"), publicKey.toBuffer()],
+        programId
+      );
+
+      // Check if subscription account exists and read data
+      const accountInfo = await connection.getAccountInfo(subscriptionPda);
+      
+      if (accountInfo && accountInfo.data.length >= 48) {
+        // Parse subscription data: user (32 bytes) + expires_at (8 bytes)
+        const expiresAtBytes = accountInfo.data.slice(40, 48);
+        const expiresAtTimestamp = Number(
+          new DataView(expiresAtBytes.buffer, expiresAtBytes.byteOffset).getBigInt64(0, true)
+        );
+        
+        const now = Math.floor(Date.now() / 1000);
+        const isActive = expiresAtTimestamp > now;
+        const daysLeft = Math.max(0, Math.ceil((expiresAtTimestamp - now) / (24 * 60 * 60)));
+        
+        setExpiresAt(expiresAtTimestamp);
+        setDaysRemaining(daysLeft);
+        setIsSubscribed(isActive);
+        setShowSubscribePrompt(!isActive);
+      } else {
+        setIsSubscribed(false);
+        setExpiresAt(null);
+        setDaysRemaining(0);
+        setShowSubscribePrompt(true);
+      }
+    } catch (error) {
+      console.error("Error checking subscription:", error);
+      setIsSubscribed(false);
+      setExpiresAt(null);
+      setDaysRemaining(0);
+      setShowSubscribePrompt(true);
+    }
+  };
+
+  // Auto-connect wallet on load
+  useEffect(() => {
+    const { solana } = window;
+    if (solana?.isPhantom && solana.isConnected) {
+      solana.connect({ onlyIfTrusted: true })
+        .then((response) => {
+          setWalletAddress(response.publicKey.toString());
+          checkSubscription(response.publicKey);
+        })
+        .catch(() => {});
+    }
+  }, []);
 
   useEffect(() => {
     const containerElement = containerRef.current;
@@ -831,7 +882,12 @@ export default function HomePage() {
           lp.z >= doorTriggerLocal.min.z && lp.z <= doorTriggerLocal.max.z;
         if (inside && !enteredDoor) {
           enteredDoor = true;
-          router.push("/chat");
+          // Check subscription before entering
+          if (!isSubscribed) {
+            setShowSubscribePrompt(true);
+          } else {
+            router.push("/chat");
+          }
         } else if (!inside) {
           enteredDoor = false;
         }
@@ -884,60 +940,100 @@ export default function HomePage() {
     };
   }, []);
 
-  // Transaction helpers and subscribe action (outside JSX)
-  async function txWrite(method, args = [], value = 0n) {
-    if (!ready) throw new Error("Privy not ready");
-    if (!authenticated || !user?.wallet?.address) throw new Error("Please connect your wallet");
-
-    if (user.wallet.id) {
-      const resp = await fetch('/api/transaction', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ walletId: user.wallet.id, method, args, value: value.toString(), contractAddress: SUBSCRIPTION_CONTRACT_ADDRESS, abi: subscriptionAbi })
-      });
-      if (!resp.ok) {
-        const e = await resp.json().catch(() => ({}));
-        throw new Error(e.error || 'Transaction failed');
-      }
-      return (await resp.json()).hash;
-    }
-
-    const { createWalletClient, custom, encodeFunctionData } = await import('viem');
-    if (!window.ethereum) throw new Error('No ethereum provider');
-    const hexChainId = '0x' + chain.id.toString(16);
-    try {
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hexChainId }] });
-    } catch (switchErr) {
-      if (switchErr?.code === 4902) {
-        await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{ chainId: hexChainId, chainName: chain.name, nativeCurrency: chain.nativeCurrency, rpcUrls: chain.rpcUrls.default.http }] });
-        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: hexChainId }] });
-      } else {
-        throw new Error(`Please switch your wallet to ${chain.name}`);
-      }
-    }
-    const walletClient = createWalletClient({ chain, transport: custom(window.ethereum), account: user.wallet.address });
-    const data = encodeFunctionData({ abi: subscriptionAbi, functionName: method, args });
-    return walletClient.sendTransaction({ to: SUBSCRIPTION_CONTRACT_ADDRESS, data, value, chain });
-  }
-
-  async function subscribeToPlan(plan) {
+  // Subscribe to Solana program
+  async function subscribe() {
     setSubError("");
     setSubLoading(true);
     try {
-      const hash = await txWrite('subscribe', [BigInt(plan.id)], plan.price);
-      const client = await createPublicClient();
-      try {
-        if (hash) {
-          await client.waitForTransactionReceipt({ hash });
-        }
-      } catch (_) {}
-      const ok = await client.readContract({ address: SUBSCRIPTION_CONTRACT_ADDRESS, abi: subscriptionAbi, functionName: 'isCallerVerifiedAndSubscribed', account: user.wallet.address });
-      setShowSubscribePrompt(!Boolean(ok));
-      if (ok) {
-        // Ensure UI reflects new permissions/state
-        if (typeof window !== 'undefined') window.location.reload();
+      const { solana } = window;
+      if (!solana?.isPhantom) {
+        throw new Error("Phantom wallet not found!");
       }
+
+      if (!walletAddress) {
+        await connectWallet();
+        return;
+      }
+
+      const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+      const programId = new PublicKey(SUBSCRIPTION_PROGRAM_ID);
+      const userPublicKey = new PublicKey(walletAddress);
+
+      // Derive PDAs (v2 for new structure)
+      const [subscriptionPda] = await PublicKey.findProgramAddress(
+        [Buffer.from("subscription_v2"), userPublicKey.toBuffer()],
+        programId
+      );
+
+      const [vaultPda] = await PublicKey.findProgramAddress(
+        [Buffer.from("vault")],
+        programId
+      );
+
+      console.log("Program ID:", programId.toString());
+      console.log("User:", userPublicKey.toString());
+      console.log("Subscription PDA:", subscriptionPda.toString());
+      console.log("Vault PDA:", vaultPda.toString());
+
+      // Create subscribe instruction with proper Anchor discriminator
+      // The discriminator is the first 8 bytes of sha256("global:subscribe")
+      const instructionData = Buffer.from([
+        0xfe, 0x1c, 0xbf, 0x8a, 0x9c, 0xb3, 0xb7, 0x35 // subscribe discriminator
+      ]);
+
+      const instruction = new TransactionInstruction({
+        keys: [
+          { pubkey: subscriptionPda, isSigner: false, isWritable: true },
+          { pubkey: userPublicKey, isSigner: true, isWritable: true },
+          { pubkey: vaultPda, isSigner: false, isWritable: true },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }
+        ],
+        programId: programId,
+        data: instructionData
+      });
+
+      // Build transaction
+      const transaction = new Transaction();
+      transaction.add(instruction);
+      
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+      transaction.recentBlockhash = blockhash;
+      transaction.feePayer = userPublicKey;
+
+      // Sign transaction with Phantom
+      const signedTransaction = await solana.signTransaction(transaction);
+      console.log("Transaction signed");
+
+      // Send the signed transaction
+      const signature = await connection.sendRawTransaction(signedTransaction.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: "confirmed"
+      });
+      console.log("Transaction sent:", signature);
+
+      // Wait for confirmation
+      const confirmation = await connection.confirmTransaction({
+        signature,
+        blockhash,
+        lastValidBlockHeight
+      }, "confirmed");
+
+      if (confirmation.value.err) {
+        throw new Error("Transaction failed: " + JSON.stringify(confirmation.value.err));
+      }
+
+      console.log("Transaction confirmed!");
+
+      // Refresh subscription status
+      await checkSubscription(userPublicKey);
+      setShowSubscribePrompt(false);
+      
+      alert(isSubscribed 
+        ? "Subscription renewed! Added 30 more days." 
+        : "Successfully subscribed for 30 days! You can now enter the house.");
     } catch (e) {
-      setSubError(e?.message || 'Failed to subscribe');
+      console.error("Subscription error:", e);
+      setSubError(e?.message || "Failed to subscribe");
     } finally {
       setSubLoading(false);
     }
@@ -946,6 +1042,85 @@ export default function HomePage() {
   return (
     <>
       <div ref={containerRef} style={{ width: "100vw", height: "100vh" }} />
+      
+      {/* Floating Wallet/Subscribe Button */}
+      <div style={{
+        position: 'fixed',
+        bottom: 40,
+        left: 20,
+        zIndex: 9999,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px'
+      }}>
+        {!walletAddress ? (
+          <button
+            onClick={connectWallet}
+            style={{
+              padding: '12px 24px',
+              background: 'linear-gradient(135deg, #9945FF 0%, #8A2BE2 100%)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 12,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+              backdropFilter: 'blur(10px)'
+            }}
+          >
+            Connect Phantom
+          </button>
+        ) : (
+          <>
+            <div style={{
+              padding: '12px 16px',
+              background: 'rgba(255,255,255,0.95)',
+              border: '1px solid rgba(153, 69, 255, 0.3)',
+              borderRadius: 12,
+              fontSize: 12,
+              color: '#333',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+              textAlign: 'center'
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                {walletAddress.slice(0, 4)}...{walletAddress.slice(-4)}
+              </div>
+              <div style={{ fontSize: 11, color: isSubscribed ? '#10b981' : '#f59e0b' }}>
+                {isSubscribed 
+                  ? `✓ Active (${daysRemaining} days left)` 
+                  : expiresAt 
+                    ? '⚠ Expired' 
+                    : 'Not Subscribed'}
+              </div>
+            </div>
+            
+            <button
+              onClick={() => setShowSubscribePrompt(true)}
+              disabled={subLoading}
+              style={{
+                padding: '12px 24px',
+                background: subLoading ? '#ccc' : 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 12,
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: subLoading ? 'not-allowed' : 'pointer',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                backdropFilter: 'blur(10px)'
+              }}
+            >
+              {subLoading 
+                ? 'Processing...' 
+                : isSubscribed 
+                  ? 'Renew (0.001 SOL)' 
+                  : 'Subscribe (0.001 SOL)'}
+            </button>
+          </>
+        )}
+      </div>
+
       {showSubscribePrompt && (
         <div className="fixed inset-0 z-[999] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(6px)' }}>
           <div
@@ -959,39 +1134,77 @@ export default function HomePage() {
             }}
           >
             <div className="flex items-center justify-between" style={{ padding: '12px 16px' }}>
-              <h3 style={{ color: '#fff', fontWeight: 600 }}>Subscribe</h3>
+              <h3 style={{ color: '#fff', fontWeight: 600 }}>
+                {isSubscribed ? 'Renew Subscription' : 'Subscribe to Enter'}
+              </h3>
               <button onClick={() => setShowSubscribePrompt(false)} style={{ color: 'rgba(255,255,255,0.9)' }}>✕</button>
             </div>
             {subError && <div className="text-sm" style={{ color: '#fecaca', padding: '0 16px 8px' }}>{subError}</div>}
-            {!authenticated && (
-              <div className="flex justify-center" style={{ padding: '0 16px 12px' }}>
-                <ConnectWalletButton className="cta-primary" />
-              </div>
-            )}
-            <div style={{ padding: '8px 12px 16px' }}>
-              {plans.length ? plans.map((plan) => (
-                <div key={plan.id} className="flex items-center justify-between" style={{
-                  margin: '8px 4px',
-                  padding: '12px 14px',
-                  background: 'rgba(255,255,255,0.35)',
-                  border: '1px solid rgba(255,255,255,0.4)',
-                  borderRadius: 16
-                }}>
-                  <div>
-                    <div style={{ color: '#111', fontWeight: 700, fontSize: 18 }}>{(Number(plan.price) / 1e18).toString()} JETH</div>
-                    <div style={{ color: '#374151', fontSize: 14 }}>{Math.round(Number(plan.duration)/(24*60*60))} days</div>
+            
+            <div style={{ padding: '16px', textAlign: 'center' }}>
+              <p style={{ color: '#fff', marginBottom: '16px', fontSize: 14 }}>
+                {isSubscribed 
+                  ? `Extend your subscription by 30 days (Currently ${daysRemaining} days remaining)`
+                  : 'Subscribe with 0.001 SOL for 30 days of access'}
+              </p>
+              
+              {!walletAddress ? (
+                <button
+                  onClick={connectWallet}
+                  style={{
+                    width: '100%',
+                    padding: '12px 24px',
+                    background: 'linear-gradient(135deg, #9945FF 0%, #8A2BE2 100%)',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 12,
+                    fontSize: 16,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    marginBottom: '12px'
+                  }}
+                >
+                  Connect Phantom Wallet
+                </button>
+              ) : (
+                <>
+                  <div style={{
+                    background: 'rgba(255,255,255,0.35)',
+                    border: '1px solid rgba(255,255,255,0.4)',
+                    borderRadius: 16,
+                    padding: '16px',
+                    marginBottom: '16px'
+                  }}>
+                    <div style={{ color: '#111', fontWeight: 700, fontSize: 20, marginBottom: '8px' }}>
+                      {SUBSCRIPTION_AMOUNT} SOL
+                    </div>
+                    <div style={{ color: '#374151', fontSize: 14 }}>
+                      30 days subscription
+                    </div>
                   </div>
+                  
                   <button
-                    disabled={subLoading || !authenticated}
-                    onClick={() => subscribeToPlan(plan)}
-                    className="manifesto-button"
-                    style={{ padding: '10px 18px', fontSize: 14 }}
+                    disabled={subLoading}
+                    onClick={subscribe}
+                    style={{
+                      width: '100%',
+                      padding: '12px 24px',
+                      background: subLoading ? '#ccc' : 'linear-gradient(135deg, #9945FF 0%, #8A2BE2 100%)',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 12,
+                      fontSize: 16,
+                      fontWeight: 600,
+                      cursor: subLoading ? 'not-allowed' : 'pointer'
+                    }}
                   >
-                    {subLoading ? 'Processing…' : 'Subscribe'}
+                    {subLoading ? 'Processing…' : (isSubscribed ? 'Renew Subscription' : 'Subscribe Now')}
                   </button>
-                </div>
-              )) : (
-                <div className="text-center text-sm" style={{ color: 'rgba(255,255,255,0.9)', padding: '8px 12px 16px' }}>No active plans configured.</div>
+                  
+                  <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, marginTop: '12px' }}>
+                    Wallet: {walletAddress.slice(0, 4)}...{walletAddress.slice(-4)}
+                  </div>
+                </>
               )}
             </div>
           </div>
